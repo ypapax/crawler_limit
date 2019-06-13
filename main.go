@@ -11,27 +11,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/glog"
+
 	"github.com/PuerkitoBio/goquery"
 )
 
 var skipUrlPrefixes = []string{"mailto:", "tel:"}
 
-const limitPeriod = time.Minute
+const limitPeriod = time.Second
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	var u string
-	var maxRequestsPerMinute int
+	var maxRequestsPerSecond int
 	flag.StringVar(&u, "url", "", "url to parse")
-	flag.IntVar(&maxRequestsPerMinute, "max-reqs-per-minute", 10, "maximum amount of requests per minute")
+	flag.IntVar(&maxRequestsPerSecond, "max-reqs-per-second", 1, "maximum amount of requests per second")
 	flag.Parse()
 	if len(u) == 0 {
-		log.Printf("missing parameter: -url")
+		glog.Error("missing parameter: -url")
 		os.Exit(1)
 	}
 	parsedUrl, err := url.Parse(u)
 	if err != nil {
-		log.Printf("couldn't parse url: %+v, err: %+v", u, err)
+		glog.Errorf("couldn't parse url: %+v, err: %+v", u, err)
 		os.Exit(1)
 	}
 	var urlsChan = make(chan string)
@@ -43,9 +44,8 @@ func main() {
 	}()
 
 	for u := range urlsChan {
-		log.Println("resultUrl", u)
 		func() {
-			if maxRequestsPerMinute <= 0 {
+			if maxRequestsPerSecond <= 0 {
 				return
 			}
 			lastRequestsMtx.Lock()
@@ -62,11 +62,11 @@ func main() {
 			if obsoleteUpTo >= 0 {
 				lastRequests = lastRequests[obsoleteUpTo+1:]
 			}
-			if len(lastRequests) <= maxRequestsPerMinute {
+			if len(lastRequests) <= maxRequestsPerSecond {
 				return
 			}
 			sleep := time.Now().Sub(lastRequests[0])
-			log.Println("sleeping for...", sleep)
+			glog.Infof("sleeping for %s", sleep)
 			time.Sleep(sleep)
 		}()
 		urls, err := getUrlsOnThePage(u)
