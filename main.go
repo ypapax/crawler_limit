@@ -8,11 +8,15 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
 
 var skipUrlPrefixes = []string{"mailto:", "tel:"}
+
+const limitPeriod = time.Minute
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -31,6 +35,8 @@ func main() {
 		os.Exit(1)
 	}
 	var urlsChan = make(chan string)
+	var lastRequests []time.Time
+	var lastRequestsMtx sync.Mutex
 
 	go func() {
 		urlsChan <- u
@@ -38,7 +44,31 @@ func main() {
 
 	for u := range urlsChan {
 		log.Println("resultUrl", u)
-
+		func() {
+			if maxRequestsPerMinute <= 0 {
+				return
+			}
+			lastRequestsMtx.Lock()
+			defer lastRequestsMtx.Unlock()
+			lastRequests = append(lastRequests, time.Now())
+			var obsoleteUpTo int = -1
+			for i, lr := range lastRequests {
+				if lr.Before(time.Now().Add(-limitPeriod)) {
+					obsoleteUpTo = i
+				} else {
+					break
+				}
+			}
+			if obsoleteUpTo >= 0 {
+				lastRequests = lastRequests[obsoleteUpTo+1:]
+			}
+			if len(lastRequests) <= maxRequestsPerMinute {
+				return
+			}
+			sleep := time.Now().Sub(lastRequests[0])
+			log.Println("sleeping for...", sleep)
+			time.Sleep(sleep)
+		}()
 		urls, err := getUrlsOnThePage(u)
 		if err != nil {
 			log.Printf("err: %+v\n", err)
