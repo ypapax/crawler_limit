@@ -43,6 +43,10 @@ func main() {
 
 	var alreadyRequestedUrls = make(map[string]struct{})
 	var alreadyRequestedUrlsMtx = sync.Mutex{}
+
+	var urlsMap = make(map[string]struct{})
+	var urlsMapMtx = sync.Mutex{}
+
 	go func() {
 		urlsChan <- u
 	}()
@@ -123,9 +127,15 @@ func main() {
 						glog.Error(err)
 						continue
 					}
+					urlsMapMtx.Lock()
+					if _, ok := urlsMap[resultUrl]; ok {
+						urlsMapMtx.Unlock()
+						continue
+					}
+					urlsMap[resultUrl] = struct{}{}
+					urlsMapMtx.Unlock()
 					fmt.Println(resultUrl)
 					go func(resultUrl string) {
-
 						urlsChan <- resultUrl
 					}(resultUrl)
 				}
