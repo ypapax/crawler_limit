@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,14 +10,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/glog"
-
 	"github.com/PuerkitoBio/goquery"
+	"github.com/golang/glog"
 )
 
 var skipUrlPrefixes = []string{"mailto:", "tel:"}
 
-const limitPeriod = time.Second
+const (
+	limitPeriod   = time.Second
+	workersAmount = 3
+)
 
 func main() {
 	var u string
@@ -39,70 +40,103 @@ func main() {
 	var lastRequests []time.Time
 	var lastRequestsMtx sync.Mutex
 
+	var alreadyRequestedUrls = make(map[string]struct{})
+	var alreadyRequestedUrlsMtx = sync.Mutex{}
 	go func() {
 		urlsChan <- u
 	}()
 
-	for u := range urlsChan {
-		func() {
-			if maxRequestsPerSecond <= 0 {
-				return
-			}
-			lastRequestsMtx.Lock()
-			defer lastRequestsMtx.Unlock()
-			lastRequests = append(lastRequests, time.Now())
-			var obsoleteUpTo int = -1
-			for i, lr := range lastRequests {
-				if lr.Before(time.Now().Add(-limitPeriod)) {
-					obsoleteUpTo = i
-				} else {
-					break
+	for i := 0; i < workersAmount; i++ {
+		go func() {
+			for u := range urlsChan {
+				func() {
+					if maxRequestsPerSecond <= 0 {
+						return
+					}
+					lastRequestsMtx.Lock()
+					defer lastRequestsMtx.Unlock()
+					lastRequests = append(lastRequests, time.Now())
+					var obsoleteUpTo int = -1
+					for i, lr := range lastRequests {
+						if lr.Before(time.Now().Add(-limitPeriod)) {
+							obsoleteUpTo = i
+						} else {
+							break
+						}
+					}
+					if obsoleteUpTo >= 0 {
+						lastRequests = lastRequests[obsoleteUpTo+1:]
+					}
+					if len(lastRequests) <= maxRequestsPerSecond {
+						return
+					}
+					sleep := time.Now().Sub(lastRequests[0])
+					glog.Infof("sleeping for %s", sleep)
+					time.Sleep(sleep)
+				}()
+				if alreadyRequested := func() bool {
+					alreadyRequestedUrlsMtx.Lock()
+					defer alreadyRequestedUrlsMtx.Unlock()
+					if _, ok := alreadyRequestedUrls[u]; ok {
+						return true
+					}
+					alreadyRequestedUrls[u] = struct{}{}
+					return false
+				}(); alreadyRequested {
+					glog.V(4).Infof("url %+v already requested, skipping ...", u)
+				}
+
+				urls, err := getUrlsOnThePage(u)
+				if err != nil {
+					glog.Error(err)
+					return
+				}
+				glog.V(4).Infof("from %s got urls %+v ", u, urls)
+				for resultUrl := range urls {
+					glog.V(4).Infof("resultUrl: %+v, parsedUrl.Scheme: %+v", resultUrl, parsedUrl.Scheme)
+					if !strings.HasPrefix(resultUrl, parsedUrl.Scheme) {
+						newUrl := *parsedUrl
+						newUrl.Path = resultUrl
+						resultUrl = newUrl.String()
+						glog.V(4).Infof("after: resultUrl: %+v, parsedUrl.Scheme: %+v", resultUrl, parsedUrl.Scheme)
+					}
+					newParsedUrl, err := url.Parse(resultUrl)
+					if err != nil {
+						glog.Error(err)
+						continue
+					}
+					glog.V(4).Infof("newParsedUrl.Host %+v, parsedUrl.Host %+v for %+v", newParsedUrl.Host, parsedUrl.Host, resultUrl)
+					if newParsedUrl.Host != parsedUrl.Host {
+						glog.V(4).Infof("that's url from other domain: %+v, skipping", resultUrl)
+						continue
+					}
+					go func(resultUrl string) {
+						urlsChan <- resultUrl
+					}(resultUrl)
 				}
 			}
-			if obsoleteUpTo >= 0 {
-				lastRequests = lastRequests[obsoleteUpTo+1:]
-			}
-			if len(lastRequests) <= maxRequestsPerSecond {
-				return
-			}
-			sleep := time.Now().Sub(lastRequests[0])
-			glog.Infof("sleeping for %s", sleep)
-			time.Sleep(sleep)
 		}()
-		urls, err := getUrlsOnThePage(u)
-		if err != nil {
-			log.Printf("err: %+v\n", err)
-			continue
-		}
-		log.Printf("from %s got urls %+v ", u, urls)
-		for resultUrl := range urls {
-			if !strings.HasPrefix(resultUrl, parsedUrl.Scheme) {
-				newUrl := parsedUrl
-				newUrl.Path = resultUrl
-				resultUrl = newUrl.String()
-			}
-			go func() {
-				urlsChan <- resultUrl
-			}()
-		}
 	}
+	forever := make(chan int)
+	<-forever
 }
 
 func getUrlsOnThePage(url string) (map[string]struct{}, error) {
-	log.Println("requesting", url)
+	glog.Infof("requesting %+v", url)
 	res, err := http.Get(url)
 	if err != nil {
-		log.Printf("err: %+v\n", err)
+		glog.Errorf("err: %+v\n", err)
 		return nil, err
 	}
 	if res.StatusCode > 399 || res.StatusCode < 200 {
 		err := fmt.Errorf("not good status code %+v requesting %+v", res.StatusCode, url)
-		log.Printf("err: %+v\n", err)
+		glog.Errorf("err: %+v\n", err)
 		return nil, err
 	}
+	defer res.Body.Close()
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
-		log.Printf("err: %+v\n", err)
+		glog.Errorf("err: %+v\n", err)
 		return nil, err
 	}
 	var resultUrls = make(map[string]struct{})
@@ -113,7 +147,7 @@ func getUrlsOnThePage(url string) (map[string]struct{}, error) {
 		}
 		href = strings.TrimSpace(href)
 		if skipUrl(href) {
-			log.Println("skipping ", href)
+			glog.V(4).Info("skipping ", href)
 			return
 		}
 		resultUrls[href] = struct{}{}
@@ -124,12 +158,13 @@ func getUrlsOnThePage(url string) (map[string]struct{}, error) {
 func skipUrl(u string) bool {
 	for _, skip := range skipUrlPrefixes {
 		if strings.HasPrefix(u, skip) {
-			log.Println("skipping ", u)
+			glog.V(4).Infof("skipping %+v because it has prefix %+v", u, skip)
 			return true
 		}
 	}
 	if len(u) == 0 {
 		return true
 	}
+	glog.V(4).Infof("url %+v is not skipped", u)
 	return false
 }
