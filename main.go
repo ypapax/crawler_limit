@@ -17,8 +17,9 @@ import (
 var skipUrlPrefixes = []string{"mailto:", "tel:"}
 
 const (
-	limitPeriod   = time.Second
-	workersAmount = 3
+	limitPeriod        = time.Second
+	workersAmount      = 3
+	urlsChanBufferSize = 1000
 )
 
 func main() {
@@ -36,7 +37,7 @@ func main() {
 		glog.Errorf("couldn't parse url: %+v, err: %+v", u, err)
 		os.Exit(1)
 	}
-	var urlsChan = make(chan string)
+	var urlsChan = make(chan string, urlsChanBufferSize)
 	var lastRequests []time.Time
 	var lastRequestsMtx sync.Mutex
 
@@ -49,13 +50,24 @@ func main() {
 	for i := 0; i < workersAmount; i++ {
 		go func() {
 			for u := range urlsChan {
-				func() {
+				if alreadyRequested := func() bool {
+					alreadyRequestedUrlsMtx.Lock()
+					defer alreadyRequestedUrlsMtx.Unlock()
+					if _, ok := alreadyRequestedUrls[u]; ok {
+						return true
+					}
+					alreadyRequestedUrls[u] = struct{}{}
+					return false
+				}(); alreadyRequested {
+					glog.V(4).Infof("url %+v already requested, skipping ...", u)
+					continue
+				}
+				if sleep := func() *time.Duration {
 					if maxRequestsPerSecond <= 0 {
-						return
+						return nil
 					}
 					lastRequestsMtx.Lock()
 					defer lastRequestsMtx.Unlock()
-					lastRequests = append(lastRequests, time.Now())
 					var obsoleteUpTo int = -1
 					for i, lr := range lastRequests {
 						if lr.Before(time.Now().Add(-limitPeriod)) {
@@ -68,24 +80,21 @@ func main() {
 						lastRequests = lastRequests[obsoleteUpTo+1:]
 					}
 					if len(lastRequests) <= maxRequestsPerSecond {
-						return
+						return nil
 					}
 					sleep := time.Now().Sub(lastRequests[0])
-					glog.Infof("sleeping for %s", sleep)
-					time.Sleep(sleep)
-				}()
-				if alreadyRequested := func() bool {
-					alreadyRequestedUrlsMtx.Lock()
-					defer alreadyRequestedUrlsMtx.Unlock()
-					if _, ok := alreadyRequestedUrls[u]; ok {
-						return true
-					}
-					alreadyRequestedUrls[u] = struct{}{}
-					return false
-				}(); alreadyRequested {
-					glog.V(4).Infof("url %+v already requested, skipping ...", u)
+					go func(u string) {
+						urlsChan <- u
+					}(u)
+					glog.V(4).Infof("sleeping for %s, lastRequests: %+v", sleep, timesStr(lastRequests))
+					return &sleep
+				}(); sleep != nil {
+					time.Sleep(*sleep)
+					continue
 				}
-
+				lastRequestsMtx.Lock()
+				lastRequests = append(lastRequests, time.Now())
+				lastRequestsMtx.Unlock()
 				urls, err := getUrlsOnThePage(u)
 				if err != nil {
 					glog.Error(err)
@@ -110,6 +119,7 @@ func main() {
 						glog.V(4).Infof("that's url from other domain: %+v, skipping", resultUrl)
 						continue
 					}
+					fmt.Println(resultUrl)
 					go func(resultUrl string) {
 						urlsChan <- resultUrl
 					}(resultUrl)
@@ -167,4 +177,14 @@ func skipUrl(u string) bool {
 	}
 	glog.V(4).Infof("url %+v is not skipped", u)
 	return false
+}
+
+const timePrintFormat = "15:04:05.999"
+
+func timesStr(tt []time.Time) string {
+	var results []string
+	for _, t := range tt {
+		results = append(results, t.Format(timePrintFormat))
+	}
+	return strings.Join(results, ", ")
 }

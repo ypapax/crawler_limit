@@ -4,7 +4,7 @@ set -ex
 run(){
     go get ./...
     go install
-    crawler_limit -alsologtostderr -v 4 -log_dir /tmp $@
+    crawler_limit  -v 4 -log_dir /tmp $@
 }
 
 $@
