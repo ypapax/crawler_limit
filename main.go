@@ -26,7 +26,7 @@ func main() {
 	var u string
 	var maxRequestsPerSecond int
 	flag.StringVar(&u, "url", "", "url to parse")
-	flag.IntVar(&maxRequestsPerSecond, "max-reqs-per-second", 1, "maximum amount of requests per second")
+	flag.IntVar(&maxRequestsPerSecond, "n", 1, "maximum amount of requests per second")
 	flag.Parse()
 	if len(u) == 0 {
 		glog.Error("missing parameter: -url")

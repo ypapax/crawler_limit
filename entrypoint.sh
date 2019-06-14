@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -ex
 
-crawler_limit  -v 4 -log_dir /tmp -url $@
+requestsPerSecond=$2
+crawler_limit  -v 4 -log_dir /tmp -url $1 -n $requestsPerSecond
