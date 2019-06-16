@@ -18,8 +18,7 @@ var skipUrlPrefixes = []string{"mailto:", "tel:"}
 
 const (
 	limitPeriod        = time.Second
-	workersAmount      = 3
-	urlsChanBufferSize = 1000
+	urlsChanBufferSize = 100000
 	requestTimeout     = time.Duration(10 * time.Second)
 )
 
@@ -52,10 +51,11 @@ func main() {
 		urlsChan <- initialURL
 	}()
 
+	workersAmount := maxRequestsPerSecond * 10
 	for i := 0; i < workersAmount; i++ {
 		go func() {
 			for u := range urlsChan {
-				glog.V(4).Infof("urlsChan len0: %+v", len(urlsChan))
+				glog.V(4).Infof("urlsChan after reading len: %+v", len(urlsChan))
 				lastRequestsMtx.Lock()
 				if sleep := func() *time.Duration {
 					if maxRequestsPerSecond <= 0 {
@@ -99,19 +99,16 @@ func main() {
 				}
 				glog.V(4).Infof("from %s got urls %+v ", u, urls)
 				for resultUrl := range urls {
-					glog.V(4).Infof("resultUrl: %+v, parsedUrl.Scheme: %+v", resultUrl, parsedUrl.Scheme)
 					if !strings.HasPrefix(resultUrl, parsedUrl.Scheme) {
 						newUrl := *parsedUrl
 						newUrl.Path = resultUrl
 						resultUrl = newUrl.String()
-						glog.V(4).Infof("after: resultUrl: %+v, parsedUrl.Scheme: %+v", resultUrl, parsedUrl.Scheme)
 					}
 					newParsedUrl, err := url.Parse(resultUrl)
 					if err != nil {
 						glog.Error(err)
 						continue
 					}
-					glog.V(5).Infof("newParsedUrl.Host %+v, parsedUrl.Host %+v for %+v", newParsedUrl.Host, parsedUrl.Host, resultUrl)
 					if newParsedUrl.Host != parsedUrl.Host {
 						glog.V(4).Infof("that's url from other domain: %+v, skipping", resultUrl)
 						continue
@@ -142,7 +139,7 @@ func main() {
 					}
 					go func(foundURL string) {
 						urlsChan <- foundURL
-						glog.V(4).Infof("urlsChan len: %+v", len(urlsChan))
+						glog.V(4).Infof("urlsChan after writing: len: %+v", len(urlsChan))
 					}(resultUrl)
 				}
 			}
@@ -199,7 +196,6 @@ func skipUrl(u string) bool {
 	if len(u) == 0 {
 		return true
 	}
-	glog.V(4).Infof("url %+v is not skipped", u)
 	return false
 }
 
