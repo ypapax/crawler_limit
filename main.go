@@ -20,21 +20,22 @@ const (
 	limitPeriod        = time.Second
 	workersAmount      = 3
 	urlsChanBufferSize = 1000
+	requestTimeout     = time.Duration(10 * time.Second)
 )
 
 func main() {
-	var u string
+	var initialURL string
 	var maxRequestsPerSecond int
-	flag.StringVar(&u, "url", "", "url to parse")
+	flag.StringVar(&initialURL, "url", "", "url to parse")
 	flag.IntVar(&maxRequestsPerSecond, "n", 1, "maximum amount of requests per second")
 	flag.Parse()
-	if len(u) == 0 {
+	if len(initialURL) == 0 {
 		glog.Error("missing parameter: -url")
 		os.Exit(1)
 	}
-	parsedUrl, err := url.Parse(u)
+	parsedUrl, err := url.Parse(initialURL)
 	if err != nil {
-		glog.Errorf("couldn't parse url: %+v, err: %+v", u, err)
+		glog.Errorf("couldn't parse url: %+v, err: %+v", initialURL, err)
 		os.Exit(1)
 	}
 	var urlsChan = make(chan string, urlsChanBufferSize)
@@ -48,24 +49,13 @@ func main() {
 	var urlsMapMtx = sync.Mutex{}
 
 	go func() {
-		urlsChan <- u
+		urlsChan <- initialURL
 	}()
 
 	for i := 0; i < workersAmount; i++ {
 		go func() {
 			for u := range urlsChan {
-				if alreadyRequested := func() bool {
-					alreadyRequestedUrlsMtx.Lock()
-					defer alreadyRequestedUrlsMtx.Unlock()
-					if _, ok := alreadyRequestedUrls[u]; ok {
-						return true
-					}
-					alreadyRequestedUrls[u] = struct{}{}
-					return false
-				}(); alreadyRequested {
-					glog.V(4).Infof("url %+v already requested, skipping ...", u)
-					continue
-				}
+				glog.V(4).Infof("urlsChan len0: %+v", len(urlsChan))
 				lastRequestsMtx.Lock()
 				if sleep := func() *time.Duration {
 					if maxRequestsPerSecond <= 0 {
@@ -89,15 +79,19 @@ func main() {
 					go func(u string) {
 						urlsChan <- u
 					}(u)
-					glog.V(4).Infof("sleeping for %s, lastRequests: %+v", sleep, timesStr(lastRequests))
-					time.Sleep(sleep)
 					return &sleep
 				}(); sleep != nil {
 					lastRequestsMtx.Unlock()
+					glog.V(4).Infof("sleeping for %s, lastRequests: %+v", sleep, timesStr(lastRequests))
+					time.Sleep(*sleep)
 					continue
 				}
 				lastRequests = append(lastRequests, time.Now())
 				lastRequestsMtx.Unlock()
+
+				alreadyRequestedUrlsMtx.Lock()
+				alreadyRequestedUrls[u] = struct{}{}
+				alreadyRequestedUrlsMtx.Unlock()
 				urls, err := getUrlsOnThePage(u)
 				if err != nil {
 					glog.Error(err)
@@ -117,7 +111,7 @@ func main() {
 						glog.Error(err)
 						continue
 					}
-					glog.V(4).Infof("newParsedUrl.Host %+v, parsedUrl.Host %+v for %+v", newParsedUrl.Host, parsedUrl.Host, resultUrl)
+					glog.V(5).Infof("newParsedUrl.Host %+v, parsedUrl.Host %+v for %+v", newParsedUrl.Host, parsedUrl.Host, resultUrl)
 					if newParsedUrl.Host != parsedUrl.Host {
 						glog.V(4).Infof("that's url from other domain: %+v, skipping", resultUrl)
 						continue
@@ -135,8 +129,20 @@ func main() {
 					urlsMap[resultUrl] = struct{}{}
 					urlsMapMtx.Unlock()
 					fmt.Println(resultUrl)
-					go func(resultUrl string) {
-						urlsChan <- resultUrl
+					if alreadyRequested := func() bool {
+						alreadyRequestedUrlsMtx.Lock()
+						defer alreadyRequestedUrlsMtx.Unlock()
+						if _, ok := alreadyRequestedUrls[resultUrl]; ok {
+							return true
+						}
+						return false
+					}(); alreadyRequested {
+						glog.V(4).Infof("url %+v already requested, skipping ...", resultUrl)
+						continue
+					}
+					go func(foundURL string) {
+						urlsChan <- foundURL
+						glog.V(4).Infof("urlsChan len: %+v", len(urlsChan))
 					}(resultUrl)
 				}
 			}
@@ -148,7 +154,10 @@ func main() {
 
 func getUrlsOnThePage(url string) (map[string]struct{}, error) {
 	glog.Infof("requesting %+v", url)
-	res, err := http.Get(url)
+	client := http.Client{
+		Timeout: requestTimeout,
+	}
+	res, err := client.Get(url)
 	if err != nil {
 		glog.Errorf("err: %+v\n", err)
 		return nil, err
