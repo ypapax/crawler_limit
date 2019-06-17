@@ -22,6 +22,30 @@ const (
 	requestTimeout     = time.Duration(10 * time.Second)
 )
 
+type unique struct {
+	mtx  sync.RWMutex
+	keys map[string]struct{}
+}
+
+func newUnique() *unique {
+	u := unique{}
+	u.keys = make(map[string]struct{})
+	return &u
+}
+
+func (u *unique) Add(k string) {
+	u.mtx.RLock()
+	defer u.mtx.RUnlock()
+	u.keys[k] = struct{}{}
+}
+
+func (u *unique) Contains(k string) bool {
+	u.mtx.Lock()
+	defer u.mtx.Unlock()
+	_, ok := u.keys[k]
+	return ok
+}
+
 func main() {
 	var initialURL string
 	var maxRequestsPerSecond int
@@ -48,8 +72,7 @@ func main() {
 	var lastRequests []time.Time
 	var lastRequestsMtx sync.Mutex
 
-	var alreadyRequestedUrls = make(map[string]struct{})
-	var alreadyRequestedUrlsMtx = sync.Mutex{}
+	var alreadyRequestedUrls = newUnique()
 
 	var uniqueUrls = make(map[string]struct{})
 	var uniqueUrlsMtx = sync.Mutex{}
@@ -94,9 +117,7 @@ func main() {
 				lastRequests = append(lastRequests, time.Now())
 				lastRequestsMtx.Unlock()
 
-				alreadyRequestedUrlsMtx.Lock()
-				alreadyRequestedUrls[u] = struct{}{}
-				alreadyRequestedUrlsMtx.Unlock()
+				alreadyRequestedUrls.Add(u)
 				urls, err := getUrlsOnThePage(u)
 				if err != nil {
 					glog.Error(err)
@@ -133,14 +154,7 @@ func main() {
 					uniqueUrls[resultUrl] = struct{}{}
 					uniqueUrlsMtx.Unlock()
 					fmt.Println(resultUrl)
-					if alreadyRequested := func() bool {
-						alreadyRequestedUrlsMtx.Lock()
-						defer alreadyRequestedUrlsMtx.Unlock()
-						if _, ok := alreadyRequestedUrls[resultUrl]; ok {
-							return true
-						}
-						return false
-					}(); alreadyRequested {
+					if alreadyRequestedUrls.Contains(resultUrl) {
 						glog.V(4).Infof("url %+v already requested, skipping ...", resultUrl)
 						continue
 					}
