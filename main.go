@@ -25,7 +25,7 @@ const (
 func main() {
 	var initialURL string
 	var maxRequestsPerSecond int
-	flag.StringVar(&initialURL, "url", "", "url to parse")
+	flag.StringVar(&initialURL, "url", "", "url to crawl on")
 	flag.IntVar(&maxRequestsPerSecond, "n", 1, "maximum amount of requests per second")
 	flag.Parse()
 	if len(initialURL) == 0 {
