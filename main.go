@@ -20,6 +20,8 @@ const (
 	limitPeriod        = time.Second
 	urlsChanBufferSize = 100000
 	requestTimeout     = time.Duration(10 * time.Second)
+
+	maxRequestsToWorkersMultiplier = 10
 )
 
 func main() {
@@ -53,7 +55,7 @@ func main() {
 
 	urlsChan <- initialURL
 
-	workersAmount := maxRequestsPerSecond * 10
+	workersAmount := maxRequestsPerSecond * maxRequestsToWorkersMultiplier
 	for i := 0; i < workersAmount; i++ {
 		go func() {
 			for u := range urlsChan {
