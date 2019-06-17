@@ -22,41 +22,6 @@ const (
 	requestTimeout     = time.Duration(10 * time.Second)
 )
 
-type unique struct {
-	mtx  sync.RWMutex
-	keys map[string]struct{}
-}
-
-func newUnique() *unique {
-	u := unique{}
-	u.keys = make(map[string]struct{})
-	return &u
-}
-
-func (u *unique) Add(k string) {
-	u.mtx.Lock()
-	defer u.mtx.Unlock()
-	u.keys[k] = struct{}{}
-}
-
-func (u *unique) Contains(k string) bool {
-	u.mtx.RLock()
-	defer u.mtx.RUnlock()
-	_, ok := u.keys[k]
-	return ok
-}
-
-func (u *unique) addIfNotContains(k string) (added bool) {
-	u.mtx.Lock()
-	defer u.mtx.Unlock()
-	_, ok := u.keys[k]
-	if ok {
-		return false
-	}
-	u.keys[k] = struct{}{}
-	return true
-}
-
 func main() {
 	var initialURL string
 	var maxRequestsPerSecond int
@@ -126,7 +91,7 @@ func main() {
 				lastRequests = append(lastRequests, time.Now())
 				lastRequestsMtx.Unlock()
 
-				alreadyRequestedUrls.Add(u)
+				alreadyRequestedUrls.add(u)
 				urls, err := getUrlsOnThePage(u)
 				if err != nil {
 					glog.Error(err)
@@ -159,7 +124,7 @@ func main() {
 						continue
 					}
 					fmt.Println(resultUrl)
-					if alreadyRequestedUrls.Contains(resultUrl) {
+					if alreadyRequestedUrls.contains(resultUrl) {
 						glog.V(4).Infof("url %+v already requested, skipping ...", resultUrl)
 						continue
 					}
@@ -208,6 +173,41 @@ func getUrlsOnThePage(url string) (map[string]struct{}, error) {
 		resultUrls[href] = struct{}{}
 	})
 	return resultUrls, nil
+}
+
+type unique struct {
+	mtx  sync.RWMutex
+	keys map[string]struct{}
+}
+
+func newUnique() *unique {
+	u := unique{}
+	u.keys = make(map[string]struct{})
+	return &u
+}
+
+func (u *unique) add(k string) {
+	u.mtx.Lock()
+	defer u.mtx.Unlock()
+	u.keys[k] = struct{}{}
+}
+
+func (u *unique) contains(k string) bool {
+	u.mtx.RLock()
+	defer u.mtx.RUnlock()
+	_, ok := u.keys[k]
+	return ok
+}
+
+func (u *unique) addIfNotContains(k string) (added bool) {
+	u.mtx.Lock()
+	defer u.mtx.Unlock()
+	_, ok := u.keys[k]
+	if ok {
+		return false
+	}
+	u.keys[k] = struct{}{}
+	return true
 }
 
 func skipUrl(u string) bool {
