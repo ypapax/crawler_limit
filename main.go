@@ -30,11 +30,18 @@ func main() {
 	flag.Parse()
 	if len(initialURL) == 0 {
 		glog.Error("missing parameter: -url")
+		glog.Flush()
+		os.Exit(1)
+	}
+	if maxRequestsPerSecond <= 0 {
+		glog.Error("-n parameter should be positive")
+		glog.Flush()
 		os.Exit(1)
 	}
 	parsedUrl, err := url.Parse(initialURL)
 	if err != nil {
 		glog.Errorf("couldn't parse url: %+v, err: %+v", initialURL, err)
+		glog.Flush()
 		os.Exit(1)
 	}
 	var urlsChan = make(chan string, urlsChanBufferSize)
@@ -44,12 +51,10 @@ func main() {
 	var alreadyRequestedUrls = make(map[string]struct{})
 	var alreadyRequestedUrlsMtx = sync.Mutex{}
 
-	var urlsMap = make(map[string]struct{})
-	var urlsMapMtx = sync.Mutex{}
+	var uniqueUrls = make(map[string]struct{})
+	var uniqueUrlsMtx = sync.Mutex{}
 
-	go func() {
-		urlsChan <- initialURL
-	}()
+	urlsChan <- initialURL
 
 	workersAmount := maxRequestsPerSecond * 10
 	for i := 0; i < workersAmount; i++ {
@@ -61,13 +66,13 @@ func main() {
 					if maxRequestsPerSecond <= 0 {
 						return nil
 					}
-					var obsoleteUpTo int = -1
+					var obsoleteUpTo = -1
 					for i, lr := range lastRequests {
 						if lr.Before(time.Now().Add(-limitPeriod)) {
 							obsoleteUpTo = i
-						} else {
-							break
+							continue
 						}
+						break
 					}
 					if obsoleteUpTo >= 0 {
 						lastRequests = lastRequests[obsoleteUpTo+1:]
@@ -76,12 +81,12 @@ func main() {
 						return nil
 					}
 					sleep := time.Now().Sub(lastRequests[0])
-					go func(u string) {
-						urlsChan <- u
-					}(u)
 					return &sleep
 				}(); sleep != nil {
 					lastRequestsMtx.Unlock()
+					urlsChan <- u // we are not processing this url,
+					// just returning it to channel and sleeping
+					// to avoid site abuse
 					glog.V(4).Infof("sleeping for %s, lastRequests: %+v", sleep, timesStr(lastRequests))
 					time.Sleep(*sleep)
 					continue
@@ -100,6 +105,7 @@ func main() {
 				glog.V(4).Infof("from %s got urls %+v ", u, urls)
 				for resultUrl := range urls {
 					if !strings.HasPrefix(resultUrl, parsedUrl.Scheme) {
+						// this for case of a not absolute url
 						newUrl := *parsedUrl
 						newUrl.Path = resultUrl
 						resultUrl = newUrl.String()
@@ -113,18 +119,19 @@ func main() {
 						glog.V(4).Infof("that's url from other domain: %+v, skipping", resultUrl)
 						continue
 					}
+					// unescape for proper read of # and query string
 					resultUrl, err = url.QueryUnescape(resultUrl)
 					if err != nil {
 						glog.Error(err)
 						continue
 					}
-					urlsMapMtx.Lock()
-					if _, ok := urlsMap[resultUrl]; ok {
-						urlsMapMtx.Unlock()
+					uniqueUrlsMtx.Lock()
+					if _, ok := uniqueUrls[resultUrl]; ok {
+						uniqueUrlsMtx.Unlock()
 						continue
 					}
-					urlsMap[resultUrl] = struct{}{}
-					urlsMapMtx.Unlock()
+					uniqueUrls[resultUrl] = struct{}{}
+					uniqueUrlsMtx.Unlock()
 					fmt.Println(resultUrl)
 					if alreadyRequested := func() bool {
 						alreadyRequestedUrlsMtx.Lock()
@@ -137,10 +144,8 @@ func main() {
 						glog.V(4).Infof("url %+v already requested, skipping ...", resultUrl)
 						continue
 					}
-					go func(foundURL string) {
-						urlsChan <- foundURL
-						glog.V(4).Infof("urlsChan after writing: len: %+v", len(urlsChan))
-					}(resultUrl)
+					urlsChan <- resultUrl
+					glog.V(4).Infof("urlsChan after writing: len: %+v", len(urlsChan))
 				}
 			}
 		}()
