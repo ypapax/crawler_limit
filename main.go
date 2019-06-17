@@ -115,11 +115,11 @@ func main() {
 					sleep := time.Now().Sub(lastRequests[0])
 					return &sleep
 				}(); sleep != nil {
-					lastRequestsMtx.Unlock()
 					urlsChan <- u // we are not processing this url,
 					// just returning it to channel and sleeping
 					// to avoid site abuse
 					glog.V(4).Infof("sleeping for %s, lastRequests: %+v", sleep, timesStr(lastRequests))
+					lastRequestsMtx.Unlock()
 					time.Sleep(*sleep)
 					continue
 				}
