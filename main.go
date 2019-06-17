@@ -51,7 +51,7 @@ func main() {
 	var lastRequestsMtx sync.Mutex
 
 	var alreadyRequestedUrls = newUnique()
-	var uniqueUrls = newUnique()
+	var foundUrls = newUnique()
 
 	urlsChan <- initialURL
 
@@ -122,7 +122,7 @@ func main() {
 						glog.Error(err)
 						continue
 					}
-					if !uniqueUrls.addIfNotContains(resultUrl) {
+					if !foundUrls.addIfNotContains(resultUrl) {
 						continue
 					}
 					fmt.Println(resultUrl)
