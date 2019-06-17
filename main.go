@@ -46,6 +46,17 @@ func (u *unique) Contains(k string) bool {
 	return ok
 }
 
+func (u *unique) addIfNotContains(k string) (added bool) {
+	u.mtx.Lock()
+	defer u.mtx.Unlock()
+	_, ok := u.keys[k]
+	if ok {
+		return false
+	}
+	u.keys[k] = struct{}{}
+	return true
+}
+
 func main() {
 	var initialURL string
 	var maxRequestsPerSecond int
@@ -73,9 +84,7 @@ func main() {
 	var lastRequestsMtx sync.Mutex
 
 	var alreadyRequestedUrls = newUnique()
-
-	var uniqueUrls = make(map[string]struct{})
-	var uniqueUrlsMtx = sync.Mutex{}
+	var uniqueUrls = newUnique()
 
 	urlsChan <- initialURL
 
@@ -146,13 +155,9 @@ func main() {
 						glog.Error(err)
 						continue
 					}
-					uniqueUrlsMtx.Lock()
-					if _, ok := uniqueUrls[resultUrl]; ok {
-						uniqueUrlsMtx.Unlock()
+					if !uniqueUrls.addIfNotContains(resultUrl) {
 						continue
 					}
-					uniqueUrls[resultUrl] = struct{}{}
-					uniqueUrlsMtx.Unlock()
 					fmt.Println(resultUrl)
 					if alreadyRequestedUrls.Contains(resultUrl) {
 						glog.V(4).Infof("url %+v already requested, skipping ...", resultUrl)
