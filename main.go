@@ -34,14 +34,14 @@ func newUnique() *unique {
 }
 
 func (u *unique) Add(k string) {
-	u.mtx.RLock()
-	defer u.mtx.RUnlock()
+	u.mtx.Lock()
+	defer u.mtx.Unlock()
 	u.keys[k] = struct{}{}
 }
 
 func (u *unique) Contains(k string) bool {
-	u.mtx.Lock()
-	defer u.mtx.Unlock()
+	u.mtx.RLock()
+	defer u.mtx.RUnlock()
 	_, ok := u.keys[k]
 	return ok
 }
