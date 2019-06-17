@@ -47,11 +47,10 @@ func main() {
 		os.Exit(1)
 	}
 	var urlsChan = make(chan string, urlsChanBufferSize)
-	var lastRequests []time.Time
-	var lastRequestsMtx sync.Mutex
 
 	var alreadyRequestedUrls = newUnique()
 	var foundUrls = newUnique()
+	var reqs = requests{maxRequestsPerSecond: maxRequestsPerSecond}
 
 	urlsChan <- initialURL
 
@@ -60,40 +59,15 @@ func main() {
 		go func() {
 			for u := range urlsChan {
 				glog.V(4).Infof("urlsChan after reading len: %+v", len(urlsChan))
-				lastRequestsMtx.Lock()
-				if sleep := func() *time.Duration {
-					if maxRequestsPerSecond <= 0 {
-						return nil
-					}
-					var obsoleteUpTo = -1
-					for i, lr := range lastRequests {
-						if lr.Before(time.Now().Add(-limitPeriod)) {
-							obsoleteUpTo = i
-							continue
-						}
-						break
-					}
-					if obsoleteUpTo >= 0 {
-						lastRequests = lastRequests[obsoleteUpTo+1:]
-					}
-					if len(lastRequests) < maxRequestsPerSecond {
-						return nil
-					}
-					sleep := time.Now().Sub(lastRequests[0])
-					return &sleep
-				}(); sleep != nil {
+				if sleep := reqs.NeedToSleep(); sleep != nil {
 					urlsChan <- u // we are not processing this url,
 					// just returning it to channel and sleeping
 					// to avoid site abuse
-					glog.V(4).Infof("sleeping for %s, lastRequests: %+v", sleep, timesStr(lastRequests))
-					lastRequestsMtx.Unlock()
 					time.Sleep(*sleep)
 					continue
 				}
-				lastRequests = append(lastRequests, time.Now())
-				lastRequestsMtx.Unlock()
-
 				alreadyRequestedUrls.add(u)
+				reqs.Add()
 				urls, err := getUrlsOnThePage(u)
 				if err != nil {
 					glog.Error(err)
@@ -223,6 +197,46 @@ func skipUrl(u string) bool {
 		return true
 	}
 	return false
+}
+
+type requests struct {
+	mutex                sync.Mutex
+	times                []time.Time
+	maxRequestsPerSecond int
+}
+
+func (r *requests) NeedToSleep() *time.Duration {
+	if r.maxRequestsPerSecond == 0 {
+		glog.Error("maxRequestsPerSecond is 0")
+	}
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	if r.maxRequestsPerSecond <= 0 {
+		return nil
+	}
+	var obsoleteUpTo = -1
+	for i, lr := range r.times {
+		if lr.Before(time.Now().Add(-limitPeriod)) {
+			obsoleteUpTo = i
+			continue
+		}
+		break
+	}
+	if obsoleteUpTo >= 0 {
+		r.times = r.times[obsoleteUpTo+1:]
+	}
+	if len(r.times) < r.maxRequestsPerSecond {
+		return nil
+	}
+	sleep := time.Now().Sub(r.times[0])
+	glog.V(4).Infof("need to sleep for %s, lastRequests: %+v", sleep, timesStr(r.times))
+	return &sleep
+}
+
+func (r *requests) Add() {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.times = append(r.times, time.Now())
 }
 
 const timePrintFormat = "15:04:05.999"
